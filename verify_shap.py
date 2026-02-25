@@ -40,21 +40,34 @@ def test_shap_workflow():
             print("SHAP values shape:", np.shape(shap_values))
             
             # Match app.py logic
-            explanation_list = []
+            explanations = []
             feature_names = X.columns.tolist()
             
             print("\nProcessing explanations (matching app.py logic)...")
             for i in range(len(X_anomalies)):
+                row = X_anomalies.iloc[i]
                 vals = shap_values[i]
-                # Create dict of feature -> shap value
-                row_explanation = {feature_names[j]: float(vals[j]) for j in range(len(feature_names))}
-                # Sort by impact
-                sorted_exp = dict(sorted(row_explanation.items(), key=lambda item: abs(item[1]), reverse=True))
-                explanation_list.append(sorted_exp)
+                
+                feature_imp = sorted(
+                    [
+                        {
+                            "feature": feature_names[j],
+                            "value": float(row.iloc[j]),
+                            "shap_value": float(vals[j]),
+                        }
+                        for j in range(len(feature_names))
+                    ],
+                    key=lambda x: abs(x["shap_value"]),
+                    reverse=True,
+                )
+                explanations.append({
+                    "features": feature_imp,
+                    "base_value": 0.0 # Placeholder
+                })
             
-            print("First anomaly explanation:")
-            for k, v in explanation_list[0].items():
-                print(f"  {k}: {v:.4f}")
+            print("First anomaly explanation (raw data):")
+            import json
+            print(json.dumps(explanations[0]["features"][:3], indent=2))
                 
             print("\nVerification successful! The logic matches app.py.")
             return True

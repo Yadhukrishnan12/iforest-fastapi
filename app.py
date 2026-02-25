@@ -83,6 +83,8 @@ async def detect_anomalies(file: UploadFile = File(...)):
                     check_additivity=False
                 )
 
+                base_value = float(explainer.expected_value) if hasattr(explainer, "expected_value") else 0.0
+                
                 for i, idx in enumerate(anomalies.index):
                     row = X.loc[idx]
                     shap_row = shap_values[i]
@@ -100,7 +102,10 @@ async def detect_anomalies(file: UploadFile = File(...)):
                         reverse=True,
                     )
 
-                    explanations.append(feature_imp)
+                    explanations.append({
+                        "features": feature_imp,
+                        "base_value": base_value
+                    })
 
                 anomalies["explanation"] = explanations
 
