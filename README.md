@@ -82,6 +82,16 @@ Frontend runs at: `http://localhost:5173`
 3. Click "Analyze Dataset"
 4. View anomalies with SHAP explanations!
 
+### 4. Detection Methods
+
+The backend now exposes multiple detectors:
+
+- `POST /detect` - Isolation Forest (numeric columns) + optional SHAP explanations
+- `POST /detect_autoencoder_numeric` - Numeric autoencoder (reconstruction error; requires TensorFlow)
+- `POST /detect_autoencoder` - Categorical autoencoder (embedding-based; scores via negative log-probability; requires TensorFlow)
+
+The frontend includes a "Detection Method" dropdown to select which endpoint to call.
+
 ---
 
 ## 📁 Project Structure

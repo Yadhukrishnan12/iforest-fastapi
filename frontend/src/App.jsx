@@ -6,11 +6,14 @@ import SanitizationReport from './SanitizationReport';
 
 function App() {
   const [file, setFile] = useState(null);
+  const [detector, setDetector] = useState('iforest');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [selectedAnomaly, setSelectedAnomaly] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
   const fileInputRef = useRef(null);
+  const rowsPerPage = 100;
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -56,13 +59,21 @@ function App() {
     formData.append('file', file);
 
     try {
-      const response = await axios.post('http://localhost:8000/detect', formData, {
+      const endpoint =
+        detector === 'ae_categorical'
+          ? 'http://localhost:8000/detect_autoencoder'
+          : detector === 'ae_numeric'
+            ? 'http://localhost:8000/detect_autoencoder_numeric'
+            : 'http://localhost:8000/detect';
+
+      const response = await axios.post(endpoint, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
       });
       console.log('API response:', response.data);
       setResult(response.data);
+      setCurrentPage(1);
     } catch (err) {
       console.error(err);
 
@@ -85,6 +96,7 @@ function App() {
     setResult(null);
     setError(null);
     setSelectedAnomaly(null);
+    setCurrentPage(1);
   };
 
   const formatNumber = (value, digits = 4) => {
@@ -97,6 +109,19 @@ function App() {
     }
     return String(value);
   };
+
+  const anomalies = result?.anomalies ?? [];
+  const totalPages = Math.max(1, Math.ceil(anomalies.length / rowsPerPage));
+  const startIndex = (currentPage - 1) * rowsPerPage;
+  const endIndex = startIndex + rowsPerPage;
+  const paginatedAnomalies = anomalies.slice(startIndex, endIndex);
+  const maxVisiblePages = 7;
+  const halfWindow = Math.floor(maxVisiblePages / 2);
+  let pageStart = Math.max(1, currentPage - halfWindow);
+  let pageEnd = Math.min(totalPages, pageStart + maxVisiblePages - 1);
+  if (pageEnd - pageStart + 1 < maxVisiblePages) {
+    pageStart = Math.max(1, pageEnd - maxVisiblePages + 1);
+  }
 
   return (
     <div className="container">
@@ -171,6 +196,30 @@ function App() {
             )}
 
             <div style={{ marginTop: '2rem', textAlign: 'center' }}>
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.875rem', color: '#94a3b8', marginBottom: '0.5rem' }}>
+                  Detection Method
+                </label>
+                <select
+                  value={detector}
+                  onChange={(e) => setDetector(e.target.value)}
+                  style={{
+                    width: '100%',
+                    maxWidth: '420px',
+                    padding: '0.75rem 1rem',
+                    borderRadius: '10px',
+                    background: 'rgba(255, 255, 255, 0.06)',
+                    border: '1px solid var(--glass-border)',
+                    color: '#e2e8f0',
+                    outline: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value="iforest">Isolation Forest (numeric)</option>
+                  <option value="ae_numeric">Autoencoder (numeric)</option>
+                  <option value="ae_categorical">Autoencoder (categorical)</option>
+                </select>
+              </div>
               <button
                 className="btn"
                 onClick={handleUpload}
@@ -244,7 +293,7 @@ function App() {
                   <thead>
                     <tr>
                       {result.anomalies.length > 0 && Object.keys(result.anomalies[0])
-                        .filter(k => k !== 'anomaly' && k !== 'score' && k !== 'explanation').map(key => (
+                        .filter(k => k !== 'anomaly' && k !== 'score' && k !== 'explanation' && k !== 'per_feature').map(key => (
                           <th key={key}>{key}</th>
                         ))}
                       <th>Anomaly Score</th>
@@ -253,13 +302,23 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {result.anomalies.slice(0, 100).map((row, idx) => {
+                    {paginatedAnomalies.map((row, idx) => {
                       const explanation = row.explanation;
+                      const perFeature = row.per_feature;
                       let topFeature = 'N/A';
                       let topValue = 0;
                       let details = 'No details available';
 
-                      if (explanation && Array.isArray(explanation)) {
+                      if (perFeature && Array.isArray(perFeature) && perFeature.length > 0) {
+                        topFeature = perFeature[0].feature;
+                        topValue = perFeature[0].recon_error ?? perFeature[0].loss ?? 0;
+                        details = perFeature.slice(0, 5)
+                          .map(f => {
+                            const v = f.recon_error ?? f.loss ?? 0;
+                            return `${f.feature}: ${formatNumber(v, 6)}`;
+                          })
+                          .join('\n');
+                      } else if (explanation && Array.isArray(explanation)) {
                         // Backend format: [{feature, value, shap_value}, ...]
                         if (explanation.length > 0) {
                           topFeature = explanation[0].feature;
@@ -294,8 +353,8 @@ function App() {
 
 
                       return (
-                        <tr key={idx}>
-                          {Object.entries(row).filter(([k]) => k !== 'anomaly' && k !== 'score' && k !== 'explanation').map(([key, val], i) => (
+                        <tr key={startIndex + idx}>
+                          {Object.entries(row).filter(([k]) => k !== 'anomaly' && k !== 'score' && k !== 'explanation' && k !== 'per_feature').map(([key, val], i) => (
                             <td key={i}>{formatNumber(val, 4)}</td>
                           ))}
                           <td>
@@ -315,7 +374,7 @@ function App() {
                             <button
                               className="btn-icon"
                               onClick={() => setSelectedAnomaly(row)}
-                              title="View SHAP Details"
+                              title="View Details"
                             >
                               <Eye size={18} />
                             </button>
@@ -326,9 +385,72 @@ function App() {
                   </tbody>
                 </table>
               </div>
-              {result.anomalies.length > 100 && (
-                <div style={{ padding: '1rem', textAlign: 'center', color: '#94a3b8', fontSize: '0.875rem' }}>
-                  Showing top 100 anomalies out of {result.anomalies_found}
+              {result.anomalies.length > 0 && (
+                <div style={{ padding: '1rem', borderTop: '1px solid var(--glass-border)' }}>
+                  <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: '0.875rem', marginBottom: '0.75rem' }}>
+                    Showing {startIndex + 1}-{Math.min(endIndex, anomalies.length)} of {anomalies.length} anomalies
+                  </div>
+                  {totalPages > 1 && (
+                    <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                        disabled={currentPage === 1}
+                        style={{ opacity: currentPage === 1 ? 0.5 : 1 }}
+                      >
+                        Prev
+                      </button>
+                      {pageStart > 1 && (
+                        <>
+                          <button
+                            className="btn btn-secondary"
+                            onClick={() => setCurrentPage(1)}
+                            style={{ opacity: currentPage === 1 ? 1 : 0.75 }}
+                          >
+                            1
+                          </button>
+                          {pageStart > 2 && (
+                            <span style={{ alignSelf: 'center', color: '#94a3b8', padding: '0 0.25rem' }}>...</span>
+                          )}
+                        </>
+                      )}
+                      {Array.from({ length: pageEnd - pageStart + 1 }, (_, i) => pageStart + i).map((page) => (
+                        <button
+                          key={page}
+                          className="btn btn-secondary"
+                          onClick={() => setCurrentPage(page)}
+                          style={{
+                            opacity: currentPage === page ? 1 : 0.75,
+                            borderColor: currentPage === page ? '#6366f1' : undefined
+                          }}
+                        >
+                          {page}
+                        </button>
+                      ))}
+                      {pageEnd < totalPages && (
+                        <>
+                          {pageEnd < totalPages - 1 && (
+                            <span style={{ alignSelf: 'center', color: '#94a3b8', padding: '0 0.25rem' }}>...</span>
+                          )}
+                          <button
+                            className="btn btn-secondary"
+                            onClick={() => setCurrentPage(totalPages)}
+                            style={{ opacity: currentPage === totalPages ? 1 : 0.75 }}
+                          >
+                            {totalPages}
+                          </button>
+                        </>
+                      )}
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                        disabled={currentPage === totalPages}
+                        style={{ opacity: currentPage === totalPages ? 0.5 : 1 }}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -339,6 +461,16 @@ function App() {
       {/* SHAP Explanation Modal */}
       <AnimatePresence>
         {selectedAnomaly && (
+          (() => {
+            const hasShap = !!selectedAnomaly.explanation;
+            const hasPerFeature = Array.isArray(selectedAnomaly.per_feature) && selectedAnomaly.per_feature.length > 0;
+            const modalTitle = hasShap
+              ? 'SHAP Feature Importance'
+              : hasPerFeature
+                ? 'Autoencoder Feature Errors'
+                : 'Anomaly Details';
+
+            return (
           <motion.div
             className="modal-overlay"
             initial={{ opacity: 0 }}
@@ -356,7 +488,7 @@ function App() {
               <div className="modal-header">
                 <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
                   <BarChart2 size={24} color="#6366f1" />
-                  SHAP Feature Importance
+                  {modalTitle}
                 </h2>
                 <button className="btn-icon" onClick={() => setSelectedAnomaly(null)}>
                   <X size={20} />
@@ -375,7 +507,7 @@ function App() {
                   Feature Contributions
                 </h3>
 
-                {selectedAnomaly.explanation && (() => {
+                {hasShap && (() => {
                   const expl = selectedAnomaly.explanation;
                   let featuresList = [];
                   let baseValue = null;
@@ -449,15 +581,66 @@ function App() {
                   );
                 })()}
 
+                {!hasShap && hasPerFeature && (() => {
+                  const rows = selectedAnomaly.per_feature;
+                  const vals = rows.map(r => (r.recon_error ?? r.loss ?? 0));
+                  const maxVal = Math.max(...vals, 0.000001);
+
+                  return (
+                    <div className="shap-chart">
+                      {rows.slice(0, 25).map((r, idx) => {
+                        const v = r.recon_error ?? r.loss ?? 0;
+                        const barWidth = (v / maxVal) * 100;
+                        return (
+                          <motion.div
+                            key={r.feature + idx}
+                            className="shap-bar-container"
+                            initial={{ opacity: 0, x: -20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: idx * 0.03 }}
+                          >
+                            <div className="shap-bar-label">
+                              <span style={{ fontWeight: 500 }}>{r.feature}</span>
+                              <span style={{ fontSize: '0.875rem', color: '#ef4444' }}>
+                                {formatNumber(v, 6)}
+                              </span>
+                            </div>
+                            <div className="shap-bar-track">
+                              <motion.div
+                                className="shap-bar"
+                                style={{
+                                  width: `${barWidth}%`,
+                                  background: 'linear-gradient(90deg, #ef4444, #dc2626)'
+                                }}
+                                initial={{ width: 0 }}
+                                animate={{ width: `${barWidth}%` }}
+                                transition={{ duration: 0.5, delay: idx * 0.03 }}
+                              />
+                            </div>
+                          </motion.div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
                 <div style={{ marginTop: '1.5rem', padding: '1rem', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
-                  <p style={{ margin: 0, fontSize: '0.75rem', color: '#94a3b8', lineHeight: 1.5 }}>
-                    <strong style={{ color: '#ef4444' }}>RED</strong> indicates positive SHAP (increases anomaly score).
-                    <strong style={{ color: '#10b981', marginLeft: '0.5rem' }}>GREEN</strong> indicates negative SHAP (decreases anomaly score).
-                  </p>
+                  {hasShap ? (
+                    <p style={{ margin: 0, fontSize: '0.75rem', color: '#94a3b8', lineHeight: 1.5 }}>
+                      <strong style={{ color: '#ef4444' }}>RED</strong> indicates positive SHAP (increases anomaly score).
+                      <strong style={{ color: '#10b981', marginLeft: '0.5rem' }}>GREEN</strong> indicates negative SHAP (decreases anomaly score).
+                    </p>
+                  ) : (
+                    <p style={{ margin: 0, fontSize: '0.75rem', color: '#94a3b8', lineHeight: 1.5 }}>
+                      Bars show per-feature reconstruction/probability error (higher = more anomalous).
+                    </p>
+                  )}
                 </div>
               </div>
             </motion.div>
           </motion.div>
+            );
+          })()
         )}
       </AnimatePresence>
     </div>

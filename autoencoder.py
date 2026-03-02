@@ -7,10 +7,15 @@ try:
     import tensorflow as tf
     from tensorflow.keras import layers, Input
     from tensorflow.keras.models import Model
+    from tensorflow.keras.callbacks import EarlyStopping
 except Exception:
     tf = None
     Model = None
 
+try:
+    from sklearn.preprocessing import StandardScaler
+except Exception:
+    StandardScaler = None
 
 def _build_mappings(df: pd.DataFrame, cat_cols: List[str]) -> Dict[str, Dict[str, int]]:
     mappings = {}
@@ -133,5 +138,98 @@ def detect_categorical_anomalies(
             "method": "categorical_autoencoder",
             "threshold": float(thresh),
             "categorical_columns": cat_cols,
+        },
+    }
+
+
+def detect_numeric_anomalies_autoencoder(
+    df: pd.DataFrame,
+    epochs: int = 30,
+    batch_size: int = 256,
+    threshold_percentile: float = 95.0,
+    validation_split: float = 0.1,
+    random_state: int = 42,
+) -> Dict[str, Any]:
+
+    if tf is None:
+        raise HTTPException(500, "TensorFlow not installed")
+    if StandardScaler is None:
+        raise HTTPException(500, "scikit-learn not installed")
+
+    X = df.select_dtypes(include=[np.number]).copy()
+    if X.shape[1] == 0:
+        raise HTTPException(400, "No numeric columns found")
+
+    X = X.replace([np.inf, -np.inf], np.nan).dropna(axis=0, how="any")
+    if X.empty:
+        raise HTTPException(400, "No usable rows after cleaning numeric data")
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X.values.astype("float32"))
+
+    n_features = X_scaled.shape[1]
+    tf.random.set_seed(random_state)
+
+    inp = Input(shape=(n_features,), name="x")
+    x = layers.Dense(min(128, max(16, n_features * 2)), activation="relu")(inp)
+    x = layers.Dense(min(64, max(8, n_features)), activation="relu")(x)
+    bottleneck = layers.Dense(min(32, max(4, n_features // 2)), activation="relu")(x)
+    x = layers.Dense(min(64, max(8, n_features)), activation="relu")(bottleneck)
+    x = layers.Dense(min(128, max(16, n_features * 2)), activation="relu")(x)
+    out = layers.Dense(n_features, activation="linear", name="x_hat")(x)
+
+    model = Model(inputs=inp, outputs=out)
+    model.compile(optimizer="adam", loss="mse")
+
+    callbacks = []
+    if validation_split and validation_split > 0:
+        callbacks.append(EarlyStopping(monitor="val_loss", patience=4, restore_best_weights=True))
+
+    model.fit(
+        X_scaled,
+        X_scaled,
+        epochs=epochs,
+        batch_size=batch_size,
+        validation_split=validation_split if validation_split and validation_split > 0 else 0.0,
+        callbacks=callbacks,
+        verbose=0,
+        shuffle=True,
+    )
+
+    X_hat = model.predict(X_scaled, verbose=0)
+    per_feature = np.square(X_scaled - X_hat)
+    scores = per_feature.mean(axis=1)
+
+    thresh = float(np.percentile(scores, threshold_percentile))
+    anomaly_mask = scores > thresh
+
+    anomalies = []
+    idxs = np.where(anomaly_mask)[0]
+    cols = X.columns.tolist()
+
+    for row_pos in idxs:
+        contrib = per_feature[row_pos]
+        top = sorted(
+            [{"feature": cols[j], "recon_error": float(contrib[j])} for j in range(len(cols))],
+            key=lambda x: x["recon_error"],
+            reverse=True,
+        )
+        original_row = df.loc[X.index[row_pos]].to_dict()
+        anomalies.append(
+            {
+                **original_row,
+                "score": float(scores[row_pos]),
+                "per_feature": top,
+            }
+        )
+
+    return {
+        "anomalies": anomalies,
+        "metadata": {
+            "method": "numeric_autoencoder",
+            "threshold": thresh,
+            "numeric_columns": cols,
+            "rows_used": int(X.shape[0]),
+            "features_used": int(len(cols)),
         },
     }

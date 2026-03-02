@@ -15,7 +15,7 @@ except Exception:
     SHAP_AVAILABLE = False
 
 from sanitizer import DataSanitizer
-from autoencoder import detect_categorical_anomalies
+from autoencoder import detect_categorical_anomalies, detect_numeric_anomalies_autoencoder
 
 app = FastAPI(title="Anomaly Detection API")
 
@@ -167,7 +167,16 @@ async def detect_autoencoder(file: UploadFile = File(...)):
             "total_rows": len(df),
             "anomalies_found": len(result["anomalies"]),
             "anomalies": result["anomalies"],
-            "metadata": result["metadata"],
+            "metadata": {
+                "original_rows": int(len(df)),
+                "cleaned_rows": int(len(df)),
+                "rows_removed": 0,
+                "total_columns": int(df.shape[1]),
+                "numeric_columns": int(df.select_dtypes(include=[np.number]).shape[1]),
+                "numeric_column_names": df.select_dtypes(include=[np.number]).columns.tolist(),
+                "column_names": df.columns.tolist(),
+                **result["metadata"],
+            },
         }
 
     except HTTPException:
@@ -178,6 +187,38 @@ async def detect_autoencoder(file: UploadFile = File(...)):
             status_code=500,
             content={
                 "error": "Autoencoder detection failed",
+                "details": str(e),
+            },
+        )
+
+
+# -------------------- Numeric Autoencoder --------------------
+@app.post("/detect_autoencoder_numeric")
+async def detect_autoencoder_numeric(file: UploadFile = File(...)):
+    try:
+        await DataSanitizer.validate_file(file)
+
+        df, metadata = await DataSanitizer.sanitize_dataframe(file)
+        if df.empty:
+            raise HTTPException(status_code=400, detail="Uploaded CSV is empty")
+
+        result = detect_numeric_anomalies_autoencoder(df)
+
+        return {
+            "total_rows": int(metadata.get("cleaned_rows", len(df))),
+            "anomalies_found": len(result["anomalies"]),
+            "anomalies": result["anomalies"],
+            "metadata": {**metadata, **result["metadata"]},
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Numeric autoencoder detection failed",
                 "details": str(e),
             },
         )
