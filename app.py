@@ -1,6 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+import io
 
 import pandas as pd
 import numpy as np
@@ -219,6 +220,47 @@ async def detect_autoencoder_numeric(file: UploadFile = File(...)):
             status_code=500,
             content={
                 "error": "Numeric autoencoder detection failed",
+                "details": str(e),
+            },
+        )
+
+
+# -------------------- Download Sanitized Dataset --------------------
+@app.post("/download_cleaned")
+async def download_cleaned_dataset(file: UploadFile = File(...)):
+    try:
+        await DataSanitizer.validate_file(file)
+        df, _metadata = await DataSanitizer.sanitize_dataframe(file)
+
+        if df.empty:
+            raise HTTPException(status_code=400, detail="No rows available after sanitization")
+
+        output = io.StringIO()
+        df.to_csv(output, index=False)
+        output.seek(0)
+
+        original_name = file.filename or "dataset.csv"
+        safe_name = DataSanitizer._sanitize_filename(original_name)
+        base_name = safe_name.rsplit(".", 1)[0] if "." in safe_name else safe_name
+        cleaned_name = f"{base_name}_cleaned.csv"
+
+        headers = {
+            "Content-Disposition": f'attachment; filename="{cleaned_name}"'
+        }
+
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers=headers,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Sanitized dataset download failed",
                 "details": str(e),
             },
         )

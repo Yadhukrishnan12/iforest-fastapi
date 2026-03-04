@@ -1,17 +1,20 @@
 import { useState, useRef } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, FileText, AlertTriangle, CheckCircle, BarChart2, RefreshCw, Eye, X } from 'lucide-react';
-import SanitizationReport from './SanitizationReport';
+import { Upload, FileText, AlertTriangle, BarChart2, RefreshCw, Eye, X } from 'lucide-react';
+import ThreatIntelligenceDashboard from './ThreatIntelligenceDashboard';
 
 function App() {
+  const Motion = motion;
   const [file, setFile] = useState(null);
   const [detector, setDetector] = useState('iforest');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
+  const [analyzedAt, setAnalyzedAt] = useState('');
   const [error, setError] = useState(null);
   const [selectedAnomaly, setSelectedAnomaly] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
+  const [downloadingCleaned, setDownloadingCleaned] = useState(false);
   const fileInputRef = useRef(null);
   const rowsPerPage = 100;
 
@@ -73,6 +76,7 @@ function App() {
       });
       console.log('API response:', response.data);
       setResult(response.data);
+      setAnalyzedAt(new Date().toLocaleString());
       setCurrentPage(1);
     } catch (err) {
       console.error(err);
@@ -91,9 +95,54 @@ function App() {
     }
   };
 
+  const getDownloadFilename = (contentDisposition, fallbackName) => {
+    if (!contentDisposition) return fallbackName;
+    const match = contentDisposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+    if (!match || !match[1]) return fallbackName;
+    return decodeURIComponent(match[1].replace(/"/g, '').trim());
+  };
+
+  const handleDownloadCleaned = async () => {
+    if (!file) {
+      setError('Please upload a CSV file first.');
+      return;
+    }
+
+    setDownloadingCleaned(true);
+    setError(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await axios.post('http://localhost:8000/download_cleaned', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        responseType: 'blob',
+      });
+
+      const fallbackName = `${file.name.replace(/\.csv$/i, '')}_cleaned.csv`;
+      const filename = getDownloadFilename(response.headers['content-disposition'], fallbackName);
+      const blob = new Blob([response.data], { type: 'text/csv;charset=utf-8;' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      setError('Failed to download cleaned dataset. Please ensure the backend is running.');
+    } finally {
+      setDownloadingCleaned(false);
+    }
+  };
+
   const reset = () => {
     setFile(null);
     setResult(null);
+    setAnalyzedAt('');
     setError(null);
     setSelectedAnomaly(null);
     setCurrentPage(1);
@@ -237,45 +286,14 @@ function App() {
             animate={{ opacity: 1, y: 0 }}
             className="results-container"
           >
-            <div className="stats-grid">
-              <div className="glass-panel stat-card">
-                <span className="stat-label">Total Rows</span>
-                <span className="stat-value">{result.total_rows}</span>
-              </div>
-              <div className="glass-panel stat-card">
-                <span className="stat-label">Anomalies Found</span>
-                <span className="stat-value danger">{result.anomalies_found}</span>
-              </div>
-              <div className="glass-panel stat-card">
-                <span className="stat-label">Contamination</span>
-                <span className="stat-value highlight">
-                  {result.metadata?.contamination_rate
-                    ? result.metadata.contamination_rate + '%'
-                    : ((result.anomalies_found / result.total_rows) * 100).toFixed(1) + '%'}
-                </span>
-              </div>
-            </div>
-
-            {/* Sanitization Report */}
-            {result.metadata && (
-              <SanitizationReport metadata={result.metadata} />
-            )}
-
-            {/* Data Quality Metadata */}
-            {result.metadata && result.metadata.rows_removed > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="glass-panel"
-                style={{ padding: '1rem', marginBottom: '1.5rem', background: 'rgba(251, 191, 36, 0.1)', border: '1px solid rgba(251, 191, 36, 0.3)' }}
-              >
-                <p style={{ margin: 0, fontSize: '0.875rem', color: '#fbbf24', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <AlertTriangle size={16} />
-                  <strong>Data Cleaning:</strong> {result.metadata.rows_removed} row(s) removed
-                  (had missing values or invalid data). {result.metadata.cleaned_rows} clean rows analyzed.
-                </p>
-              </motion.div>
-            )}
+            <ThreatIntelligenceDashboard
+              result={result}
+              detector={detector}
+              fileName={file?.name}
+              analyzedAt={analyzedAt}
+              downloadingCleaned={downloadingCleaned}
+              onDownloadCleaned={handleDownloadCleaned}
+            />
 
             <div className="glass-panel" style={{ padding: '0' }}>
               <div style={{ padding: '1.5rem', borderBottom: '1px solid var(--glass-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -355,7 +373,7 @@ function App() {
                       return (
                         <tr key={startIndex + idx}>
                           {Object.entries(row).filter(([k]) => k !== 'anomaly' && k !== 'score' && k !== 'explanation' && k !== 'per_feature').map(([key, val], i) => (
-                            <td key={i}>{formatNumber(val, 4)}</td>
+                            <td key={`${key}-${i}`}>{formatNumber(val, 4)}</td>
                           ))}
                           <td>
                             <span className="score-badge">
